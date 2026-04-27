@@ -268,6 +268,8 @@ Usage:
   fn project add [name] [path] [opts]  Register a new project
   fn project remove | rm <name> [--force]
                                       Unregister a project
+  fn project delete <name> [--force] [--keep-files]
+                                      Delete project and all Fusion data (worktrees, .fusion/)
   fn project show <name>               Show project details with health
   fn project info [name]               Show project details (alias for show)
   fn project set-default | default <name>
