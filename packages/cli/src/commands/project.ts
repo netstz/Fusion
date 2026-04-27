@@ -479,15 +479,35 @@ export async function runProjectDelete(name: string, options: ProjectDeleteOptio
   await central.init();
 
   try {
-    const project = await findProjectByNameOrId(central, name);
+    let project = await findProjectByNameOrId(central, name);
+    let orphanPath: string | undefined;
+
     if (!project) {
+      // Try resolving name as a filesystem path
+      const resolvedPath = isAbsolute(name) ? name : resolve(process.cwd(), name);
+      if (existsSync(resolvedPath)) {
+        orphanPath = resolvedPath;
+      } else {
+        // Search registered projects by path basename
+        const allProjects = await central.listProjects();
+        const match = allProjects.find((p) => p.path === name || basename(p.path) === name);
+        if (match) {
+          project = match;
+        }
+      }
+    }
+
+    if (!project && !orphanPath) {
       console.error(`Error: Project '${name}' not found.`);
       process.exit(1);
     }
 
+    const projectPath = project?.path ?? orphanPath!;
+    const projectName = project?.name ?? name;
+
     // Check for running agents unless --force
     if (!options.force) {
-      const fusionDir = join(project.path, ".fusion");
+      const fusionDir = join(projectPath, ".fusion");
       if (existsSync(fusionDir)) {
         try {
           const agentStore = new AgentStore({ rootDir: fusionDir });
@@ -507,11 +527,12 @@ export async function runProjectDelete(name: string, options: ProjectDeleteOptio
     }
 
     // Unregister from central DB
-    await central.unregisterProject(project.id);
+    if (project) {
+      await central.unregisterProject(project.id);
+    }
 
     // Filesystem cleanup (unless --keep-files)
     if (!options.keepFiles) {
-      const projectPath = project.path;
       const fusionDir = join(projectPath, ".fusion");
 
       // Remove git worktrees created by Fusion (all except main worktree)
@@ -551,7 +572,7 @@ export async function runProjectDelete(name: string, options: ProjectDeleteOptio
     }
 
     console.log();
-    console.log(`  ✓ Deleted project '${project.name}' and all Fusion data.`);
+    console.log(`  ✓ Deleted project '${projectName}' and all Fusion data.`);
     console.log();
   } finally {
     await central.close();
