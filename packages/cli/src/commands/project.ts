@@ -402,6 +402,19 @@ export async function runProjectRemove(name: string, options: ProjectRemoveOptio
     process.exit(1);
   }
 
+  // Ask confirmation BEFORE initialising CentralCore so the SQLite
+  // ExperimentalWarning does not interleave with the interactive prompt.
+  if (!options.force) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(`Unregister project '${name}'? [y/N] `);
+    rl.close();
+
+    if (answer.trim().toLowerCase() !== "y") {
+      console.log("Cancelled.");
+      return;
+    }
+  }
+
   const central = new CentralCore();
   await central.init();
 
@@ -410,17 +423,6 @@ export async function runProjectRemove(name: string, options: ProjectRemoveOptio
     if (!project) {
       console.error(`Error: Project '${name}' not found.`);
       process.exit(1);
-    }
-
-    if (!options.force) {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      const answer = await rl.question(`Unregister project '${project.name}'? [y/N] `);
-      rl.close();
-
-      if (answer.trim().toLowerCase() !== "y") {
-        console.log("Cancelled.");
-        return;
-      }
     }
 
     await central.unregisterProject(project.id);
