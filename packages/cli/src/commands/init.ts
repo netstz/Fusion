@@ -8,12 +8,12 @@
  * Idempotent: if already initialized, reports success without recreating.
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 const execAsync = promisify(exec);
-import { CentralCore, QMD_INSTALL_COMMAND, isQmdAvailable } from "@fusion/core";
+import { CentralCore, QMD_INSTALL_COMMAND, isQmdAvailable, TaskStore } from "@fusion/core";
 import { maybeInstallClaudeSkillForNewProject } from "./claude-skills-runner.js";
 import { isGitRepo } from "./git.js";
 import {
@@ -93,14 +93,16 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
   await addLocalStorageToGitignore(cwd);
   await warnIfQmdMissing();
 
-  // Create fusion.db (empty SQLite file)
+  // Create and initialise fusion.db by opening it through TaskStore.
+  // This writes the full SQLite schema (all tables, WAL mode, etc.) rather
+  // than a bare 16-byte magic-header stub that every subsequent command
+  // would reject with "file is not a database".
   if (!existsSync(dbPath)) {
-    // SQLite database header for an empty database
-    const sqliteHeader = Buffer.from([
-      0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66,
-      0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00
-    ]);
-    writeFileSync(dbPath, sqliteHeader);
+    const store = new TaskStore(cwd);
+    // Accessing any property forces the lazy `db` getter to run, which
+    // calls Database.init() and writes the real schema to disk.
+    await store.listTasks();
+    store.close();
     console.log(`  ✓ Created fusion.db`);
   }
 
