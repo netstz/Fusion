@@ -10,7 +10,7 @@
  */
 
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
-import { copyFile, rm } from "node:fs/promises";
+import { copyFile, readFile, rm, stat } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import type { TaskStore } from "./store.js";
@@ -264,6 +264,30 @@ export class PluginLoader extends EventEmitter<{
     return resolve(this.getProjectRoot(), path);
   }
 
+  /**
+   * Resolve a plugin path to its actual entry file.
+   * When `path` points to a directory, reads its package.json to find the
+   * ESM entry (exports["."].import → main → index.js).  This is required
+   * before the copy-to-reload cache-bust trick, which only works on files.
+   */
+  private async resolveEntryFile(path: string): Promise<string> {
+    const s = await stat(path).catch(() => null);
+    if (!s?.isDirectory()) return path;
+
+    // Try package.json exports / main
+    try {
+      const pkg = JSON.parse(await readFile(resolve(path, "package.json"), "utf-8")) as Record<string, unknown>;
+      const exportsField = pkg["exports"] as Record<string, unknown> | undefined;
+      const importEntry =
+        (exportsField?.["."] as Record<string, unknown> | undefined)?.["import"] ??
+        (exportsField?.["."] as string | undefined);
+      const entry = (typeof importEntry === "string" ? importEntry : null) ?? (pkg["main"] as string | undefined) ?? "index.js";
+      return resolve(path, entry);
+    } catch {
+      return resolve(path, "index.js");
+    }
+  }
+
   private async importPluginModule(path: string, bypassCache = false): Promise<unknown> {
     // Check cache first (unless bypassing cache for reload)
     if (!bypassCache && this.loadedModules.has(path)) {
@@ -276,11 +300,14 @@ export class PluginLoader extends EventEmitter<{
     let mod: unknown;
 
     if (bypassCache) {
+      // The copy-to-reload cache-bust trick requires a file (not a directory).
+      // Resolve directory plugin paths to their actual entry file first.
+      const filePath = await this.resolveEntryFile(path);
       moduleImportVersion += 1;
-      const ext = extname(path);
-      const baseName = basename(path, ext);
-      const reloadedPath = resolve(dirname(path), `.${baseName}.reload-${moduleImportVersion}${ext}`);
-      await copyFile(path, reloadedPath);
+      const ext = extname(filePath);
+      const baseName = basename(filePath, ext);
+      const reloadedPath = resolve(dirname(filePath), `.${baseName}.reload-${moduleImportVersion}${ext}`);
+      await copyFile(filePath, reloadedPath);
       try {
         mod = await import(pathToFileURL(reloadedPath).href);
       } finally {

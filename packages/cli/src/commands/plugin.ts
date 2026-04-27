@@ -54,6 +54,7 @@ async function createPluginLoader(
   // Create a mock TaskStore for the loader (plugins don't need full task store access)
   const mockTaskStore = {
     getFusionDir: () => projectPath + "/.fusion",
+    getRootDir: () => projectPath,
     on: () => {},
     off: () => {},
   } as unknown as ConstructorParameters<typeof PluginLoader>[0]["taskStore"];
