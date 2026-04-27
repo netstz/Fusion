@@ -124,7 +124,7 @@ async function loadCommandHandlers() {
   const { runGitStatus, runGitFetch, runGitPull, runGitPush } = await import("./commands/git.js");
   const { runBackupCreate, runBackupList, runBackupRestore, runBackupCleanup } = await import("./commands/backup.js");
   const { runMissionCreate, runMissionList, runMissionShow, runMissionDelete, runMissionActivateSlice } = await import("./commands/mission.js");
-  const { runProjectList, runProjectAdd, runProjectRemove, runProjectShow, runProjectInfo, runProjectSetDefault, runProjectDetect } = await import("./commands/project.js");
+  const { runProjectList, runProjectAdd, runProjectRemove, runProjectDelete, runProjectShow, runProjectInfo, runProjectSetDefault, runProjectDetect } = await import("./commands/project.js");
   const { runNodeList, runNodeConnect, runNodeDisconnect, runNodeShow, runNodeHealth, runMeshStatus } = await import("./commands/node.js");
   const { runInit } = await import("./commands/init.js");
   const { runAgentStop, runAgentStart } = await import("./commands/agent.js");
@@ -183,6 +183,7 @@ async function loadCommandHandlers() {
     runProjectList,
     runProjectAdd,
     runProjectRemove,
+    runProjectDelete,
     runProjectShow,
     runProjectInfo,
     runProjectSetDefault,
@@ -456,6 +457,7 @@ async function main() {
     runProjectList,
     runProjectAdd,
     runProjectRemove,
+    runProjectDelete,
     runProjectShow,
     runProjectInfo,
     runProjectSetDefault,
@@ -597,6 +599,13 @@ async function main() {
             await runProjectRemove(name, { force });
             break;
           }
+          case "delete": {
+            const name = args[2];
+            const force = args.includes("--force") || args.includes("-f");
+            const keepFiles = args.includes("--keep-files");
+            await runProjectDelete(name, { force, keepFiles });
+            break;
+          }
           case "show": {
             const name = args[2];
             await runProjectShow(name);
@@ -613,7 +622,7 @@ async function main() {
             break;
           default:
             console.error(`Unknown subcommand: project ${subcommand || ""}`);
-            console.log("Try: fn project list | add | remove | show | info | set-default | detect");
+            console.log("Try: fn project list | add | remove | delete | show | info | set-default | detect");
             process.exit(1);
         }
         break;

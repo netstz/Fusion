@@ -14,6 +14,7 @@ import {
   CentralCore,
   GlobalSettingsStore,
   TaskStore,
+  AgentStore,
   ensureMemoryFileWithBackend,
   type RegisteredProject,
   type IsolationMode,
@@ -22,8 +23,9 @@ import {
   COLUMN_LABELS,
   type Column,
 } from "@fusion/core";
-import { resolve, isAbsolute, relative, basename } from "node:path";
-import { existsSync, statSync } from "node:fs";
+import { resolve, isAbsolute, relative, basename, join } from "node:path";
+import { existsSync, statSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { detectProjectFromCwd, setDefaultProject } from "../project-context.js";
 import { maybeInstallClaudeSkillForNewProject } from "./claude-skills-runner.js";
@@ -56,6 +58,16 @@ export interface ProjectAddOptions {
 export interface ProjectRemoveOptions {
   /** Skip confirmation prompts */
   force?: boolean;
+}
+
+/**
+ * Options for project delete command.
+ */
+export interface ProjectDeleteOptions {
+  /** Skip confirmation prompts and running-agents check */
+  force?: boolean;
+  /** Only unregister from central DB; do not delete on-disk data */
+  keepFiles?: boolean;
 }
 
 /**
@@ -432,6 +444,114 @@ export async function runProjectRemove(name: string, options: ProjectRemoveOptio
     console.log();
     console.log("  Note: Project data is preserved. You can re-register with:");
     console.log(`        fn project add ${project.name} ${project.path}`);
+    console.log();
+  } finally {
+    await central.close();
+  }
+}
+
+/**
+ * Delete a project: unregister from central DB and clean up all on-disk data.
+ *
+ * @param name - Project name or ID
+ * @param options - Options including force and keep-files flags
+ */
+export async function runProjectDelete(name: string, options: ProjectDeleteOptions = {}): Promise<void> {
+  if (!name) {
+    console.error("Usage: fn project delete <name> [--force] [--keep-files]");
+    process.exit(1);
+  }
+
+  // Ask confirmation BEFORE initialising CentralCore so the SQLite
+  // ExperimentalWarning does not interleave with the interactive prompt.
+  if (!options.force) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(`Permanently delete project '${name}' and all its data? [y/N] `);
+    rl.close();
+
+    if (answer.trim().toLowerCase() !== "y") {
+      console.log("Cancelled.");
+      return;
+    }
+  }
+
+  const central = new CentralCore();
+  await central.init();
+
+  try {
+    const project = await findProjectByNameOrId(central, name);
+    if (!project) {
+      console.error(`Error: Project '${name}' not found.`);
+      process.exit(1);
+    }
+
+    // Check for running agents unless --force
+    if (!options.force) {
+      const fusionDir = join(project.path, ".fusion");
+      if (existsSync(fusionDir)) {
+        try {
+          const agentStore = new AgentStore({ rootDir: fusionDir });
+          await agentStore.init();
+          const allAgents = await agentStore.listAgents({ includeEphemeral: true });
+          const running = allAgents.filter((a) => a.state === "active" || a.state === "running");
+          if (running.length > 0) {
+            console.error(
+              `Error: Project has ${running.length} running agent(s). Stop them first or use --force.`,
+            );
+            process.exit(1);
+          }
+        } catch {
+          // If we can't read the agent store, proceed (may be corrupted/missing)
+        }
+      }
+    }
+
+    // Unregister from central DB
+    await central.unregisterProject(project.id);
+
+    // Filesystem cleanup (unless --keep-files)
+    if (!options.keepFiles) {
+      const projectPath = project.path;
+      const fusionDir = join(projectPath, ".fusion");
+
+      // Remove git worktrees created by Fusion (all except main worktree)
+      try {
+        const result = spawnSync("git", ["worktree", "list", "--porcelain"], {
+          cwd: projectPath,
+          encoding: "utf8",
+        });
+        if (result.status === 0 && result.stdout) {
+          const entries = result.stdout.trim().split(/\n\n+/);
+          for (const entry of entries) {
+            const pathMatch = entry.match(/^worktree (.+)/m);
+            if (!pathMatch) continue;
+            const wtPath = pathMatch[1].trim();
+            // Skip the main worktree (same as project path)
+            if (wtPath === projectPath) continue;
+            // Only remove worktrees under the project path
+            if (!wtPath.startsWith(projectPath)) continue;
+            spawnSync("git", ["worktree", "remove", "--force", wtPath], {
+              cwd: projectPath,
+              encoding: "utf8",
+            });
+          }
+        }
+      } catch {
+        // Swallow git errors (project may not be a git repo)
+      }
+
+      // Remove .fusion/ directory
+      if (existsSync(fusionDir)) {
+        try {
+          rmSync(fusionDir, { recursive: true, force: true });
+        } catch {
+          // Swallow errors
+        }
+      }
+    }
+
+    console.log();
+    console.log(`  ✓ Deleted project '${project.name}' and all Fusion data.`);
     console.log();
   } finally {
     await central.close();
