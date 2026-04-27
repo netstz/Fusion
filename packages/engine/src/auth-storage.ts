@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
+import type { AuthCredential } from "@mariozechner/pi-coding-agent";
 import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
 import type { OAuthCredentials } from "@mariozechner/pi-ai/oauth";
 
@@ -98,9 +99,35 @@ function resolveStoredCredentialApiKey(providerId: string, credential: StoredCre
   return undefined;
 }
 
+/**
+ * Migrate legacy OAuth credentials into primary AuthStorage so that the primary
+ * storage can handle token refresh (including lock-based concurrent refresh).
+ * Only migrates providers that are not already present in primary storage.
+ */
+function migrateLegacyCredentials(
+  target: AuthStorage,
+  legacyCredentials: Record<string, StoredCredential>,
+): void {
+  for (const [provider, credential] of Object.entries(legacyCredentials)) {
+    if (target.has(provider)) continue;
+    if (credential.type === "oauth" || credential.type === "api_key") {
+      try {
+        // AuthStorage.set accepts the credential shape directly
+        target.set(provider, credential as unknown as AuthCredential);
+      } catch {
+        // Non-fatal: fall back to static resolution on getApiKey
+      }
+    }
+  }
+}
+
 export function createFusionAuthStorage(): AuthStorage {
   const primary = AuthStorage.create(getFusionAuthPath());
   let legacyCredentials = readLegacyCredentials();
+
+  // Eagerly migrate legacy credentials so the primary AuthStorage handles
+  // OAuth refresh (token rotation, lock-based concurrent refresh, etc.).
+  migrateLegacyCredentials(primary, legacyCredentials);
 
   return new Proxy(primary, {
     get(target, prop, receiver) {
@@ -108,6 +135,9 @@ export function createFusionAuthStorage(): AuthStorage {
         return () => {
           target.reload();
           legacyCredentials = readLegacyCredentials();
+          // Re-migrate in case legacy files were updated (e.g. token refreshed
+          // by a separate pi-coding-agent process writing to ~/.pi/agent/auth.json).
+          migrateLegacyCredentials(target, legacyCredentials);
         };
       }
 
@@ -136,6 +166,8 @@ export function createFusionAuthStorage(): AuthStorage {
           const primaryKey = await target.getApiKey(provider);
           if (primaryKey) return primaryKey;
 
+          // Fallback for any credential that wasn't migrated (e.g. migration
+          // failed or provider is not a recognised OAuth/api_key type).
           return resolveStoredCredentialApiKey(provider, legacyCredentials[provider]);
         };
       }
