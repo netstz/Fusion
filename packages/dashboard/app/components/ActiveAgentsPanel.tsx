@@ -49,7 +49,7 @@ function LiveAgentCard({ agent, projectId, onSelect }: LiveAgentCardProps) {
       <div className="live-agent-card-transcript">
         {entries.length === 0 ? (
           <div className="live-agent-card-empty">
-            {isConnected ? "Waiting for output..." : "Connecting..."}
+            {!agent.taskId ? "Waiting for task..." : isConnected ? "Waiting for output..." : "Connecting..."}
           </div>
         ) : (
           entries.slice(0, 20).map((entry, i) => (
