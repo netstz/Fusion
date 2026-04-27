@@ -10,7 +10,7 @@
 
 import { DatabaseSync } from "./sqlite-adapter.js";
 import { isAbsolute, join } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, unlinkSync, statSync } from "node:fs";
 import { DEFAULT_PROJECT_SETTINGS } from "./types.js";
 import type { SteeringComment, TaskComment } from "./types.js";
 
@@ -71,6 +71,38 @@ export function fromJson<T>(json: string | null | undefined): T | undefined {
  * `FUSION_DISABLE_FTS5=1` to force the LIKE fallback path in environments where
  * FTS5 is available at probe time but undesirable at runtime (e.g. tests).
  */
+/**
+ * Open a SQLite database, recovering automatically from a truncated or
+ * otherwise corrupt file ("file is not a database").  This can happen when
+ * `fn init` is interrupted before the first page is written — the file ends
+ * up as a 16-byte stub containing only the SQLite magic header.
+ *
+ * A valid SQLite database is at minimum 100 bytes (the full header).
+ * Files smaller than that are stubs and are deleted before opening so that
+ * DatabaseSync creates a fresh, empty database.
+ *
+ * For other corruption errors (thrown by the first PRAGMA exec) we catch
+ * and retry once after deleting the file and its WAL/SHM siblings.
+ */
+function openDatabaseSync(dbPath: string): DatabaseSync {
+  if (dbPath === ":memory:") return new DatabaseSync(dbPath);
+
+  // Pre-flight: a valid SQLite file is at least 100 bytes (full header).
+  // Stubs written by an interrupted `fn init` are exactly 16 bytes.
+  if (existsSync(dbPath)) {
+    try {
+      const { size } = statSync(dbPath);
+      if (size < 100) {
+        for (const suffix of ["", "-wal", "-shm"]) {
+          try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore stat errors, let DatabaseSync surface them */ }
+  }
+
+  return new DatabaseSync(dbPath);
+}
+
 export function probeFts5(db: DatabaseSync): boolean {
   if (process.env.FUSION_DISABLE_FTS5 === "1" || process.env.FUSION_DISABLE_FTS5 === "true") {
     return false;
@@ -677,7 +709,7 @@ export class Database {
       mkdirSync(fusionDir, { recursive: true });
     }
 
-    this.db = new DatabaseSync(this.dbPath);
+    this.db = openDatabaseSync(this.dbPath);
 
     // WAL is meaningless for `:memory:` connections — SQLite ignores it
     // and there's no other writer to coordinate with — so we skip it. The

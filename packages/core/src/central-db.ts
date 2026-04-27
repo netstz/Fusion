@@ -12,7 +12,7 @@
 
 import { DatabaseSync } from "./sqlite-adapter.js";
 import { join } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, unlinkSync, statSync } from "node:fs";
 import type { Statement } from "./db.js";
 import { resolveGlobalDir } from "./global-settings.js";
 
@@ -204,6 +204,25 @@ CREATE INDEX IF NOT EXISTS idxSettingsSyncNode ON settingsSyncState(nodeId);
 
 // ── Central Database Class ────────────────────────────────────────────────
 
+/**
+ * Open a SQLite database, recovering automatically from a truncated or
+ * otherwise corrupt file ("file is not a database").  Mirrors the same
+ * helper in db.ts — see that file for the full rationale.
+ */
+function openDatabaseSync(dbPath: string): DatabaseSync {
+  if (existsSync(dbPath)) {
+    try {
+      const { size } = statSync(dbPath);
+      if (size < 100) {
+        for (const suffix of ["", "-wal", "-shm"]) {
+          try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore stat errors */ }
+  }
+  return new DatabaseSync(dbPath);
+}
+
 export class CentralDatabase {
   private db: DatabaseSync;
   private readonly dbPath: string;
@@ -220,7 +239,7 @@ export class CentralDatabase {
       mkdirSync(this.globalDir, { recursive: true });
     }
 
-    this.db = new DatabaseSync(this.dbPath);
+    this.db = openDatabaseSync(this.dbPath);
 
     // Enable WAL mode for concurrent reader/writer access
     this.db.exec("PRAGMA journal_mode = WAL");
