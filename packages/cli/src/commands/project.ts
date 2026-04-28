@@ -38,6 +38,8 @@ const VALID_ISOLATION_MODES: IsolationMode[] = ["in-process", "child-process"];
 export interface ProjectListOptions {
   /** Output as JSON instead of table */
   json?: boolean;
+  /** Filter to projects whose fusion.db predates their registration (stale from prior lifecycle) */
+  dirty?: boolean;
 }
 
 /**
@@ -90,6 +92,7 @@ export interface ProjectInfoData {
   };
   taskCounts: Record<string, number>;
   defaultProject: boolean;
+  dirty: boolean;
 }
 
 /**
@@ -154,6 +157,16 @@ async function getProjectHealth(central: CentralCore, projectId: string): Promis
 }
 
 /**
+ * Return true if the project's fusion.db predates its central DB registration.
+ * This means .fusion/ survived from a prior project lifecycle at the same path.
+ */
+function isDirty(project: RegisteredProject): boolean {
+  const dbPath = join(project.path, ".fusion", "fusion.db");
+  if (!existsSync(dbPath)) return false;
+  return statSync(dbPath).mtimeMs < new Date(project.createdAt).getTime();
+}
+
+/**
  * List all registered projects.
  *
  * @param options - Options including json output flag
@@ -203,6 +216,7 @@ export async function runProjectList(options: ProjectListOptions = {}): Promise<
             : undefined,
           taskCounts,
           defaultProject: defaultProject?.id === project.id,
+          dirty: isDirty(project),
         };
       })
     );
@@ -212,19 +226,28 @@ export async function runProjectList(options: ProjectListOptions = {}): Promise<
       return;
     }
 
+    // Apply --dirty filter
+    const displayData = options.dirty ? projectData.filter((p) => p.dirty) : projectData;
+
+    if (options.dirty && displayData.length === 0) {
+      console.log("\n  No projects with stale fusion.db found.\n");
+      return;
+    }
+
     // Table output
     console.log();
-    console.log("  Registered Projects:");
+    console.log(options.dirty ? "  Projects with stale fusion.db (dirty):" : "  Registered Projects:");
     console.log();
 
     // Header
     console.log("  Name              Status      Isolation     Tasks  Last Activity");
     console.log("  " + "─".repeat(72));
 
-    for (const project of projectData) {
+    for (const project of displayData) {
       const totalTasks = Object.values(project.taskCounts).reduce((a, b) => a + b, 0);
       const statusDot = project.status === "active" ? "●" : project.status === "paused" ? "○" : "○";
       const defaultMarker = project.defaultProject ? " *" : "  ";
+      const dirtyLabel = project.dirty ? " [DIRTY]" : "";
 
       const name = project.name.padEnd(16);
       const status = `${statusDot} ${project.status}`.padEnd(12);
@@ -232,7 +255,7 @@ export async function runProjectList(options: ProjectListOptions = {}): Promise<
       const tasks = String(totalTasks).padStart(5);
       const lastActivity = formatLastActivity(project.lastActivityAt);
 
-      console.log(`  ${defaultMarker}${name} ${status} ${isolation} ${tasks}  ${lastActivity}`);
+      console.log(`  ${defaultMarker}${name} ${status} ${isolation} ${tasks}  ${lastActivity}${dirtyLabel}`);
     }
 
     console.log();
@@ -240,6 +263,12 @@ export async function runProjectList(options: ProjectListOptions = {}): Promise<
     console.log(`  ${projects.length} project${projects.length === 1 ? "" : "s"} registered, ${activeCount} active`);
     if (defaultProject) {
       console.log(`  * indicates default project (${defaultProject.name})`);
+    }
+    if (!options.dirty) {
+      const dirtyCount = projectData.filter((p) => p.dirty).length;
+      if (dirtyCount > 0) {
+        console.log(`  ${dirtyCount} project${dirtyCount === 1 ? "" : "s"} with stale fusion.db — run: fn project list --dirty`);
+      }
     }
     console.log();
   } finally {

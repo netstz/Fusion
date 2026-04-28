@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { ensureMemoryFileWithBackend } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
-import { getOrCreateProjectStore } from "../project-store-resolver.js";
+import { getOrCreateProjectStore, evictProjectStore } from "../project-store-resolver.js";
 import type { ApiRouteRegistrar } from "./types.js";
 
 const {
@@ -523,6 +523,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       await central.init();
 
       await central.unregisterProject(req.params.id);
+      evictProjectStore(req.params.id);
       await central.close();
 
       res.json({ success: true });

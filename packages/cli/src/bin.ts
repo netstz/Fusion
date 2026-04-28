@@ -264,7 +264,7 @@ Usage:
   fn mission show | info <id>         Show mission details
   fn mission delete <id> [--force]    Delete a mission
   fn mission activate-slice <id>      Mark a slice active
-  fn project list | ls [--json]       List all registered projects
+  fn project list | ls [--dirty] [--json]  List all registered projects; --dirty filters to stale-db projects
   fn project add [name] [path] [opts]  Register a new project
   fn project remove | rm <name> [--force]
                                       Unregister a project
@@ -574,7 +574,8 @@ async function main() {
           case "ls":
             {
               const json = args.includes("--json");
-              await runProjectList({ json });
+              const dirty = args.includes("--dirty");
+              await runProjectList({ json, dirty });
             }
             break;
           case "add": {
